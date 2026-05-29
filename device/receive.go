@@ -138,6 +138,13 @@ func (device *Device) RoutineReceiveIncoming(
 			// check size of packet
 			packet := bufsArrs[i][:size]
 
+			if device.headers.init.start != MessageInitiationType {
+				rawType := binary.LittleEndian.Uint32(packet[:4])
+				if rawType >= 1 && rawType <= 4 {
+					continue
+				}
+			}
+
 			// get message padding and type based on information from S1-S4 and H1-H4
 			msgType, padding := device.DeterminePacketTypeAndPadding(packet, MessageUnknownType)
 			if padding > 0 {

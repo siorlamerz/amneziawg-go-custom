@@ -146,6 +146,20 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 		buf := make([]byte, n)
 		rand.Read(buf)
+
+		// маскировка под QUIC DTLS
+		if n > 4 {
+			// UIC Short Header 50/50 DTLS
+			if i%2 == 0 {
+				rByte, _ := rand.Int(rand.Reader, big.NewInt(16))
+				buf[0] = 0x40 | byte(rByte.Int64())
+			} else {
+				buf[0] = 0x16 // Handshake record
+				buf[1] = 0xFE // Version major
+				buf[2] = 0xFD // Version minor
+			}
+		}
+
 		sendBuffer = append(sendBuffer, buf)
 	}
 
@@ -589,6 +603,41 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
+
+		if peer.device.junk.max > 0 {
+			chanceBig, _ := rand.Int(rand.Reader, big.NewInt(100))
+			if chanceBig.Int64() < 10 { // 10% шанс мусора
+				jmin := int64(peer.device.junk.min)
+				jmax := int64(peer.device.junk.max)
+
+				if jmax >= jmin && jmax > 0 {
+					sizeBig, _ := rand.Int(rand.Reader, big.NewInt(jmax-jmin+1))
+					junkSize := int(sizeBig.Int64() + jmin)
+					junkBuf := make([]byte, junkSize)
+
+					rand.Read(junkBuf)
+
+					// Base62 формат для мусора
+					const chars62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+					for i := range junkBuf {
+						junkBuf[i] = chars62[junkBuf[i]%62]
+					}
+
+					// QUIC и DTLS заголовки в мусоре клиент сбросить, а дпи пропустит
+					if junkSize > 4 {
+						if junkSize%2 == 0 {
+							rByte, _ := rand.Int(rand.Reader, big.NewInt(16))
+							junkBuf[0] = 0x40 | byte(rByte.Int64())
+						} else {
+							junkBuf[0] = 0x16 // Handshake record
+							junkBuf[1] = 0xFE // DTLS 1.2 major
+							junkBuf[2] = 0xFD // DTLS 1.2 minor
+						}
+					}
+					peer.SendBuffers([][]byte{junkBuf})
+				}
+			}
+		}
 
 		err := peer.SendBuffers(bufs)
 		if dataSent {

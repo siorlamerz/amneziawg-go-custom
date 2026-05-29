@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-const chars52 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const chars62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func newRandCharObf(val string) (obf, error) {
 	length, err := strconv.Atoi(val)
@@ -26,13 +26,14 @@ type randCharObf struct {
 func (o *randCharObf) Obfuscate(dst, src []byte) {
 	rand.Read(dst[:o.length])
 	for i := range dst[:o.length] {
-		dst[i] = chars52[dst[i]%52]
+		dst[i] = chars62[dst[i]%62]
 	}
 }
 
 func (o *randCharObf) Deobfuscate(dst, src []byte) bool {
 	for _, b := range src[:o.length] {
-		if !unicode.IsLetter(rune(b)) {
+		r := rune(b)
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
 			return false
 		}
 	}
