@@ -98,6 +98,70 @@ func (peer *Peer) SendKeepalive() {
 	peer.SendStagedPackets()
 }
 
+// Вспомогательная функция: Генерация валидной структуры DTLS 1.2 Handshake ClientHello
+func generateFakeDTLSClientHello(buf []byte) {
+	if len(buf) < 60 {
+		return
+	}
+	// DTLS Record Header
+	buf[0] = 0x16 // ContentType: Handshake
+	buf[1] = 0xfe
+	buf[2] = 0xfd // Version: DTLS 1.2
+	buf[3] = 0x00
+	buf[4] = 0x00        // Epoch
+	rand.Read(buf[5:11]) // Рандомизируем Sequence Number
+
+	recLen := len(buf) - 13
+	buf[11] = byte(recLen >> 8)
+	buf[12] = byte(recLen & 0xFF)
+
+	// Handshake Header
+	buf[13] = 0x01 // Handshake Type: ClientHello
+	hsLen := len(buf) - 25
+	buf[14] = byte(hsLen >> 16)
+	buf[15] = byte(hsLen >> 8)
+	buf[16] = byte(hsLen & 0xFF)
+
+	buf[17] = 0x00
+	buf[18] = 0x00 // Msg Seq
+	buf[19] = 0x00
+	buf[20] = 0x00
+	buf[21] = 0x00 // Frag Offset
+	buf[22] = buf[14]
+	buf[23] = buf[15]
+	buf[24] = buf[16] // Frag Len
+
+	// Client Hello Body
+	buf[25] = 0xfe
+	buf[26] = 0xfd        // Version DTLS 1.2
+	rand.Read(buf[27:59]) // Random Session ID (32 байта)
+	buf[59] = 0x00        // Session ID Length (0)
+}
+
+// Вспомогательная функция: Генерация валидной структуры QUIC Initial пакета (Long Header)
+func generateFakeQUICInitial(buf []byte) {
+	if len(buf) < 30 {
+		return
+	}
+	buf[0] = 0xc0 // Long Header, Initial Type
+	buf[1] = 0x00
+	buf[2] = 0x00
+	buf[3] = 0x00
+	buf[4] = 0x01         // Version: QUIC v1
+	buf[5] = 0x08         // Destination Connection ID Len (8)
+	rand.Read(buf[6:14])  // DCID
+	buf[14] = 0x08        // Source Connection ID Len (8)
+	rand.Read(buf[15:23]) // SCID
+	buf[23] = 0x00        // Token Length (0)
+
+	// Записываем длину QUIC varint (2 байта)
+	payloadLen := len(buf) - 26
+	buf[24] = 0x40 | byte(payloadLen>>8)
+	buf[25] = byte(payloadLen & 0xFF)
+
+	rand.Read(buf[26:28]) // Packet Number (2 байта)
+}
+
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	if !isRetry {
 		peer.timers.handshakeAttempts.Store(0)
@@ -148,15 +212,11 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 		rand.Read(buf)
 
 		// маскировка под QUIC DTLS
-		if n > 4 {
-			// UIC Short Header 50/50 DTLS
+		if n > 60 {
 			if i%2 == 0 {
-				rByte, _ := rand.Int(rand.Reader, big.NewInt(16))
-				buf[0] = 0x40 | byte(rByte.Int64())
+				generateFakeQUICInitial(buf)
 			} else {
-				buf[0] = 0x16 // Handshake record
-				buf[1] = 0xFE // Version major
-				buf[2] = 0xFD // Version minor
+				generateFakeDTLSClientHello(buf)
 			}
 		}
 
@@ -605,33 +665,38 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketSent()
 
 		if peer.device.junk.max > 0 {
-			chanceBig, _ := rand.Int(rand.Reader, big.NewInt(100))
-			if chanceBig.Int64() < 10 { // 10% шанс мусора
-				jmin := int64(peer.device.junk.min)
-				jmax := int64(peer.device.junk.max)
+			peer.obfState.Lock()
+			obfLevel := peer.obfState.currentLevel
+			peer.obfState.Unlock()
+
+			// при сетевых потерях увеличиваем шанс мусора с 10 до 30 проц
+			chanceLimit := uint32(10)
+			if obfLevel > 0 {
+				chanceLimit = 30
+			}
+
+			if fastrandn(100) < chanceLimit {
+				jmin := uint32(peer.device.junk.min)
+				jmax := uint32(peer.device.junk.max)
 
 				if jmax >= jmin && jmax > 0 {
-					sizeBig, _ := rand.Int(rand.Reader, big.NewInt(jmax-jmin+1))
-					junkSize := int(sizeBig.Int64() + jmin)
+					junkSize := int(fastrandn(jmax-jmin+1) + jmin)
 					junkBuf := make([]byte, junkSize)
 
 					rand.Read(junkBuf)
 
-					// Base62 формат для мусора
+					// Base62 для мусора
 					const chars62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 					for i := range junkBuf {
 						junkBuf[i] = chars62[junkBuf[i]%62]
 					}
 
-					// QUIC и DTLS заголовки в мусоре клиент сбросить, а дпи пропустит
-					if junkSize > 4 {
+					// маскировка мусорного UDP
+					if junkSize > 60 {
 						if junkSize%2 == 0 {
-							rByte, _ := rand.Int(rand.Reader, big.NewInt(16))
-							junkBuf[0] = 0x40 | byte(rByte.Int64())
+							generateFakeQUICInitial(junkBuf)
 						} else {
-							junkBuf[0] = 0x16 // Handshake record
-							junkBuf[1] = 0xFE // DTLS 1.2 major
-							junkBuf[2] = 0xFD // DTLS 1.2 minor
+							generateFakeDTLSClientHello(junkBuf)
 						}
 					}
 					peer.SendBuffers([][]byte{junkBuf})

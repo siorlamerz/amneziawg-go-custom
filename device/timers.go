@@ -77,6 +77,15 @@ func (peer *Peer) timersActive() bool {
 }
 
 func expiredRetransmitHandshake(peer *Peer) {
+	peer.obfState.Lock()
+	peer.obfState.handshakeLossCount++
+	// Если пакет хэндшейка теряется второй раз подряд, тспу явно мешает связи.
+	// повышаем генерацию мусора до 30 процю
+	if peer.obfState.handshakeLossCount > 2 {
+		peer.obfState.currentLevel = 1
+	}
+	peer.obfState.Unlock()
+
 	if peer.timers.handshakeAttempts.Load() > MaxTimerHandshakes {
 		peer.device.log.Verbosef("%s - Handshake did not complete after %d attempts, giving up", peer, MaxTimerHandshakes+2)
 
@@ -178,6 +187,11 @@ func (peer *Peer) timersHandshakeComplete() {
 	if peer.timersActive() {
 		peer.timers.retransmitHandshake.Del()
 	}
+	peer.obfState.Lock()
+	peer.obfState.handshakeLossCount = 0
+	peer.obfState.currentLevel = 0
+	peer.obfState.Unlock()
+
 	peer.timers.handshakeAttempts.Store(0)
 	peer.timers.sentLastMinuteHandshake.Store(false)
 	peer.lastHandshakeNano.Store(time.Now().UnixNano())

@@ -56,6 +56,11 @@ type Peer struct {
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
 	persistentKeepaliveInterval atomic.Uint32
+	obfState                    struct {
+		sync.Mutex
+		handshakeLossCount int // cчетчик потерь пакетов хэндшейка
+		currentLevel       int // уровень эскалации 0 стандарт 1 усиленный
+	}
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
