@@ -5,6 +5,21 @@ AmneziaWG is a contemporary version of the WireGuard protocol. It's a fork of Wi
 The precursor, WireGuard, is known for its efficiency but had issues with detection due to its distinctive packet signatures.
 AmneziaWG addresses this problem by employing advanced obfuscation methods, allowing its traffic to blend seamlessly with regular internet traffic.
 As a result, AmneziaWG maintains high performance while adding an extra layer of stealth, making it a superb choice for those seeking a fast and discreet VPN connection.
+## USAGE-custom
+Самостоятельная сборка
+```
+CGO_ENABLED=0 go build -ldflags "-s -w" -o amneziawg-go ./cmd/amneziawg-go
+```
+Скопировать на целевой сервер бинарник
+
+Установить из клиента на сервер AWG2, далее зайти на сервер и выполнить след. 
+```
+docker cp ./amneziawg-go amnezia-awg2:/usr/bin/amneziawg-go
+docker exec -it amnezia-awg2 chmod +x /usr/bin/amneziawg-go
+docker restart amnezia-awg2
+docker commit amnezia-awg2 amneziavpn/amnezia-awg2:latest
+```
+ГОТОВО
 
 ## Usage
 
