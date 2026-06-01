@@ -16,6 +16,12 @@ import (
 //go:linkname fastrandn runtime.fastrandn
 func fastrandn(n uint32) uint32
 
+// keepaliveJitter returns KeepaliveTimeout with ±2s random jitter.
+// This breaks the fixed 10-second interval detectable by traffic analysis.
+func keepaliveJitter() time.Duration {
+	return KeepaliveTimeout + time.Millisecond*time.Duration(fastrandn(4001)) - 2*time.Second
+}
+
 // A Timer manages time-based aspects of the WireGuard protocol.
 // Timer roughly copies the interface of the Linux kernel's struct timer_list.
 type Timer struct {
@@ -79,8 +85,7 @@ func (peer *Peer) timersActive() bool {
 func expiredRetransmitHandshake(peer *Peer) {
 	peer.obfState.Lock()
 	peer.obfState.handshakeLossCount++
-	// Если пакет хэндшейка теряется второй раз подряд, тспу явно мешает связи.
-	// повышаем генерацию мусора до 30 процю
+	// escalate junk rate after repeated handshake timeouts — DPI interference suspected
 	if peer.obfState.handshakeLossCount > 2 {
 		peer.obfState.currentLevel = 1
 	}
@@ -120,7 +125,7 @@ func expiredSendKeepalive(peer *Peer) {
 	if peer.timers.needAnotherKeepalive.Load() {
 		peer.timers.needAnotherKeepalive.Store(false)
 		if peer.timersActive() {
-			peer.timers.sendKeepalive.Mod(KeepaliveTimeout)
+			peer.timers.sendKeepalive.Mod(keepaliveJitter())
 		}
 	}
 }
@@ -154,7 +159,7 @@ func (peer *Peer) timersDataSent() {
 func (peer *Peer) timersDataReceived() {
 	if peer.timersActive() {
 		if !peer.timers.sendKeepalive.IsPending() {
-			peer.timers.sendKeepalive.Mod(KeepaliveTimeout)
+			peer.timers.sendKeepalive.Mod(keepaliveJitter())
 		} else {
 			peer.timers.needAnotherKeepalive.Store(true)
 		}
@@ -208,7 +213,9 @@ func (peer *Peer) timersSessionDerived() {
 func (peer *Peer) timersAnyAuthenticatedPacketTraversal() {
 	keepalive := peer.persistentKeepaliveInterval.Load()
 	if keepalive > 0 && peer.timersActive() {
-		peer.timers.persistentKeepalive.Mod(time.Duration(keepalive) * time.Second)
+		// ±500ms jitter on persistent keepalive to break predictable intervals
+		jitter := time.Millisecond*time.Duration(fastrandn(1001)) - 500*time.Millisecond
+		peer.timers.persistentKeepalive.Mod(time.Duration(keepalive)*time.Second + jitter)
 	}
 }
 

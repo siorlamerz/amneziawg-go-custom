@@ -350,6 +350,7 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		}
 		device.log.Verbosef("UAPI: Updating s1 padding")
 		device.paddings.init = padding
+		device.warnPaddingSizeCollisions()
 
 	case "s2":
 		padding, err := strconv.Atoi(value)
@@ -361,6 +362,7 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		}
 		device.log.Verbosef("UAPI: Updating s2 padding")
 		device.paddings.response = padding
+		device.warnPaddingSizeCollisions()
 
 	case "s3":
 		padding, err := strconv.Atoi(value)
@@ -372,6 +374,7 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		}
 		device.log.Verbosef("UAPI: Updating s3 padding")
 		device.paddings.cookie = padding
+		device.warnPaddingSizeCollisions()
 
 	case "s4":
 		padding, err := strconv.Atoi(value)
@@ -740,4 +743,46 @@ func (d *ipcSetDevice) mergeWithDevice(device *Device) error {
 	device.headers.transport = d.headers.transport
 
 	return nil
+}
+
+// warnPaddingSizeCollisions logs a warning if any padded packet sizes recreate
+// standard WireGuard size signatures or collide with each other.
+// S4 (transport) is excluded — transport packets vary naturally in size.
+func (device *Device) warnPaddingSizeCollisions() {
+	s1 := device.paddings.init
+	s2 := device.paddings.response
+	s3 := device.paddings.cookie
+
+	stdSizes := [3]int{MessageInitiationSize, MessageResponseSize, MessageCookieReplySize}
+
+	checkStd := func(name string, base, padding int) {
+		if padding == 0 {
+			return
+		}
+		total := base + padding
+		for _, std := range stdSizes {
+			if total == std {
+				device.log.Errorf("obf warning: %s=%d makes packets %d bytes — identical to vanilla WireGuard %d-byte message, obfuscation ineffective",
+					name, padding, total, std)
+			}
+		}
+	}
+
+	checkStd("S1", MessageInitiationSize, s1)
+	checkStd("S2", MessageResponseSize, s2)
+	checkStd("S3", MessageCookieReplySize, s3)
+
+	// pairwise: different message types must not produce the same total size
+	if s1 > 0 && s2 > 0 && MessageInitiationSize+s1 == MessageResponseSize+s2 {
+		device.log.Errorf("obf warning: S1=%d and S2=%d make init and response packets the same size (%d bytes)",
+			s1, s2, MessageInitiationSize+s1)
+	}
+	if s1 > 0 && s3 > 0 && MessageInitiationSize+s1 == MessageCookieReplySize+s3 {
+		device.log.Errorf("obf warning: S1=%d and S3=%d make init and cookie packets the same size (%d bytes)",
+			s1, s3, MessageInitiationSize+s1)
+	}
+	if s2 > 0 && s3 > 0 && MessageResponseSize+s2 == MessageCookieReplySize+s3 {
+		device.log.Errorf("obf warning: S2=%d and S3=%d make response and cookie packets the same size (%d bytes)",
+			s2, s3, MessageResponseSize+s2)
+	}
 }

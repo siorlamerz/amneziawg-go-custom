@@ -58,8 +58,8 @@ type Peer struct {
 	persistentKeepaliveInterval atomic.Uint32
 	obfState                    struct {
 		sync.Mutex
-		handshakeLossCount int // cчетчик потерь пакетов хэндшейка
-		currentLevel       int // уровень эскалации 0 стандарт 1 усиленный
+		handshakeLossCount int // counts consecutive handshake timeouts
+		currentLevel       int // escalation level: 0 = normal, 1 = elevated junk rate
 	}
 }
 

@@ -86,6 +86,7 @@ type Device struct {
 		mtu    atomic.Int32
 	}
 
+	decoy    decoyServer
 	ipcMutex sync.RWMutex
 	closed   chan struct{}
 	log      *Logger
@@ -216,6 +217,8 @@ func (device *Device) upLocked() error {
 // downLocked attempts to bring the device down.
 // The caller must hold device.state.mu and is responsible for updating device.state.state.
 func (device *Device) downLocked() error {
+	device.decoy.stop()
+
 	err := device.BindClose()
 	if err != nil {
 		device.log.Errorf("Bind close failed: %v", err)
@@ -507,6 +510,7 @@ func (device *Device) BindUpdate() error {
 
 	// open new sockets
 	if !device.isUp() {
+		device.decoy.stop()
 		return nil
 	}
 
@@ -551,6 +555,9 @@ func (device *Device) BindUpdate() error {
 	for _, fn := range recvFns {
 		go device.RoutineReceiveIncoming(batchSize, fn)
 	}
+
+	// start TCP decoy on the same port to defeat active probing
+	device.decoy.start(netc.port, device.log)
 
 	device.log.Verbosef("UDP bind has been updated")
 	return nil

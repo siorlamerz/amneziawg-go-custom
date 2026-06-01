@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"math/big"
 	"net"
 	"os"
 	"sync"
@@ -98,7 +97,34 @@ func (peer *Peer) SendKeepalive() {
 	peer.SendStagedPackets()
 }
 
-// Вспомогательная функция: Генерация валидной структуры DTLS 1.2 Handshake ClientHello
+// bimodalRandN returns a random integer in [lo, hi] using a bimodal distribution
+// that concentrates at the small and large ends of the range, mimicking real
+// HTTPS traffic where packets cluster around ACK-size and MTU-size.
+// Used for junk packet sizing; S1-S4 remain fixed (protocol requires exact match).
+func bimodalRandN(lo, hi int) int {
+	if lo >= hi {
+		return lo
+	}
+	span := hi - lo
+	roll := fastrandn(100)
+	var offset int
+	switch {
+	case roll < 35: // small end (0–25% of span)
+		offset = int(fastrandn(uint32(span/4 + 1)))
+	case roll < 65: // middle (25–60% of span)
+		mid := span * 3 / 5
+		if mid > span/4 {
+			offset = span/4 + int(fastrandn(uint32(mid-span/4+1)))
+		} else {
+			offset = span / 4
+		}
+	default: // large end (60–100% of span)
+		offset = span*3/5 + int(fastrandn(uint32(span-span*3/5+1)))
+	}
+	return lo + offset
+}
+
+// generateFakeDTLSClientHello writes a minimal DTLS 1.2 ClientHello record into buf.
 func generateFakeDTLSClientHello(buf []byte) {
 	if len(buf) < 60 {
 		return
@@ -109,7 +135,7 @@ func generateFakeDTLSClientHello(buf []byte) {
 	buf[2] = 0xfd // Version: DTLS 1.2
 	buf[3] = 0x00
 	buf[4] = 0x00        // Epoch
-	rand.Read(buf[5:11]) // Рандомизируем Sequence Number
+	rand.Read(buf[5:11]) // randomize sequence number
 
 	recLen := len(buf) - 13
 	buf[11] = byte(recLen >> 8)
@@ -131,19 +157,20 @@ func generateFakeDTLSClientHello(buf []byte) {
 	buf[23] = buf[15]
 	buf[24] = buf[16] // Frag Len
 
-	// Client Hello Body
+	// ClientHello body
 	buf[25] = 0xfe
 	buf[26] = 0xfd        // Version DTLS 1.2
-	rand.Read(buf[27:59]) // Random Session ID (32 байта)
+	rand.Read(buf[27:59]) // 32-byte Random field
 	buf[59] = 0x00        // Session ID Length (0)
 }
 
-// Вспомогательная функция: Генерация валидной структуры QUIC Initial пакета (Long Header)
+// generateFakeQUICInitial writes a minimal QUIC v1 Initial Long Header packet into buf.
 func generateFakeQUICInitial(buf []byte) {
 	if len(buf) < 30 {
 		return
 	}
-	buf[0] = 0xc0 // Long Header, Initial Type
+	// 0xc1: Long Header (bit7=1), Fixed (bit6=1), Initial (bits4-5=00), 2-byte PN (bits0-1=01)
+	buf[0] = 0xc1
 	buf[1] = 0x00
 	buf[2] = 0x00
 	buf[3] = 0x00
@@ -154,12 +181,12 @@ func generateFakeQUICInitial(buf []byte) {
 	rand.Read(buf[15:23]) // SCID
 	buf[23] = 0x00        // Token Length (0)
 
-	// Записываем длину QUIC varint (2 байта)
-	payloadLen := len(buf) - 26
+	// 2-byte QUIC variable-length integer encoding of payload length
+	payloadLen := len(buf) - 28
 	buf[24] = 0x40 | byte(payloadLen>>8)
 	buf[25] = byte(payloadLen & 0xFF)
 
-	rand.Read(buf[26:28]) // Packet Number (2 байта)
+	rand.Read(buf[26:28]) // 2-byte packet number
 }
 
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
@@ -205,13 +232,12 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	jmax := peer.device.junk.max
 
 	for i := 0; i < jc; i++ {
-		nBig, _ := rand.Int(rand.Reader, big.NewInt(int64(jmax-jmin+1)))
-		n := int(nBig.Int64()) + jmin
+		n := bimodalRandN(jmin, jmax)
 
 		buf := make([]byte, n)
 		rand.Read(buf)
 
-		// маскировка под QUIC DTLS
+		// mimic QUIC or DTLS traffic for larger pre-handshake junk packets
 		if n > 60 {
 			if i%2 == 0 {
 				generateFakeQUICInitial(buf)
@@ -669,29 +695,22 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			obfLevel := peer.obfState.currentLevel
 			peer.obfState.Unlock()
 
-			// при сетевых потерях увеличиваем шанс мусора с 10 до 30 проц
+			// increase junk probability from 10% to 30% when handshake losses are detected
 			chanceLimit := uint32(10)
 			if obfLevel > 0 {
 				chanceLimit = 30
 			}
 
 			if fastrandn(100) < chanceLimit {
-				jmin := uint32(peer.device.junk.min)
-				jmax := uint32(peer.device.junk.max)
+				jmin := peer.device.junk.min
+				jmax := peer.device.junk.max
 
 				if jmax >= jmin && jmax > 0 {
-					junkSize := int(fastrandn(jmax-jmin+1) + jmin)
+					junkSize := bimodalRandN(jmin, jmax)
 					junkBuf := make([]byte, junkSize)
-
 					rand.Read(junkBuf)
 
-					// Base62 для мусора
-					const chars62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-					for i := range junkBuf {
-						junkBuf[i] = chars62[junkBuf[i]%62]
-					}
-
-					// маскировка мусорного UDP
+					// mimic QUIC or DTLS for larger mid-session junk packets
 					if junkSize > 60 {
 						if junkSize%2 == 0 {
 							generateFakeQUICInitial(junkBuf)

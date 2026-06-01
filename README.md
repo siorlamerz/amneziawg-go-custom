@@ -5,21 +5,51 @@ AmneziaWG is a contemporary version of the WireGuard protocol. It's a fork of Wi
 The precursor, WireGuard, is known for its efficiency but had issues with detection due to its distinctive packet signatures.
 AmneziaWG addresses this problem by employing advanced obfuscation methods, allowing its traffic to blend seamlessly with regular internet traffic.
 As a result, AmneziaWG maintains high performance while adding an extra layer of stealth, making it a superb choice for those seeking a fast and discreet VPN connection.
-## USAGE-custom
-Самостоятельная сборка
-```
-CGO_ENABLED=0 go build -ldflags "-s -w" -o amneziawg-go ./cmd/amneziawg-go
-```
-Скопировать на целевой сервер бинарник
+## This Fork
 
-Установить из клиента на сервер AWG2, далее зайти на сервер и выполнить след. 
+Extends the original AmneziaWG with additional DPI evasion techniques:
+
+- **TCP decoy server** — listens on the same port as UDP, responds as nginx to active probing (TSPU/GFW send TCP connections to suspected VPN ports to fingerprint the server type)
+- **QUIC/DTLS mimicry** — junk packets mimic QUIC Initial and DTLS ClientHello headers for larger sizes
+- **Keepalive jitter** — ±2 s random jitter on the 10 s keepalive interval to break fixed-interval ML signatures; ±500 ms on persistent keepalive
+- **Adaptive obfuscation** — junk packet rate escalates from 10 % to 30 % after repeated handshake timeouts (DPI interference suspected)
+- **Anti-probing** — drops raw WireGuard message types 1–4 when custom headers are configured, so the server is invisible to passive scanners
+- **S1–S3 collision warnings** — logs an error at startup if any padded packet size recreates a vanilla WireGuard signature or two message types produce the same size
+- **Bimodal junk size distribution** — junk packets use a bimodal distribution (small / medium / large) instead of uniform random, better matching real HTTPS traffic patterns
+
+## Docker Deployment
+
+Build the image from this repository:
+
+```bash
+docker build -t my-amneziawg .
 ```
-docker cp ./amneziawg-go amnezia-awg2:/usr/bin/amneziawg-go
-docker exec -it amnezia-awg2 chmod +x /usr/bin/amneziawg-go
-docker restart amnezia-awg2
-docker commit amnezia-awg2 amneziavpn/amnezia-awg2:latest
+
+Run the container:
+
+```bash
+docker run -d \
+  --name amneziawg \
+  --restart unless-stopped \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.ipv6.conf.all.forwarding=1 \
+  -v /etc/amneziawg/awg0.conf:/etc/amneziawg/awg0.conf:ro \
+  -p 41442:41442/udp \
+  my-amneziawg
 ```
-ГОТОВО
+
+The container brings the interface up via `awg-quick` on start and tears it down cleanly on stop.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `AWG_CONFIG` | `/etc/amneziawg/awg0.conf` | Path to the config file inside the container |
+
+> [!NOTE]
+> The container requires `NET_ADMIN` capability and access to `/dev/net/tun`. The kernel module (`amneziawg-linux-kernel-module`) is not needed — the Go userspace implementation is used instead.
 
 ## Usage
 
